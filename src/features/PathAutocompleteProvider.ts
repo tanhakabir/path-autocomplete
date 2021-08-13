@@ -4,7 +4,6 @@ import * as minimatch from 'minimatch';
 import PathConfiguration from './PathConfiguration';
 
 // node modules
-import * as fs from 'fs';
 import * as path from 'path';
 
 var configuration = new PathConfiguration();
@@ -20,7 +19,7 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
     insideString: boolean;
     namePrefix: string;
 
-    provideCompletionItems(document: vs.TextDocument, position: vs.Position, token: vs.CancellationToken): Thenable<vs.CompletionItem[]> {
+    async provideCompletionItems(document: vs.TextDocument, position: vs.Position, token: vs.CancellationToken): Promise<vs.CompletionItem[]> {
         var currentLine = document.getText(document.lineAt(position).range);
         var self = this;
 
@@ -35,7 +34,7 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
             return Promise.resolve([]);
         }
 
-        var foldersPath = this.getFoldersPath(document.fileName, currentLine, position.character);
+        var foldersPath = await this.getFoldersPath(document.fileName, currentLine, position.character);
 
         if (foldersPath.length == 0) {
             return Promise.resolve([]);
@@ -173,22 +172,21 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
     getFolderItems(foldersPath: string[]) {
         var results = foldersPath.map(folderPath => {
             return new Promise(function(resolve, reject) {
-                fs.readdir(folderPath, function(err, items) {
-                    if (err) {
-                        return reject(err);
-                    }
+                vs.workspace.fs.readDirectory(vs.Uri.parse(folderPath)).then(content => {
                     var fileResults = [];
 
-                    items.forEach(item => {
+                    content.forEach(file => {
                         try {
-                            fileResults.push(new FileInfo(path.join(folderPath, item)));
+                            fileResults.push(new FileInfo(path.join(folderPath, file[0])))
                         } catch (err) {
                             // silently ignore permissions errors
                         }
-                    });
+                    })
 
                     resolve(fileResults);
-                });
+                }, error => {
+                    reject(error)
+                })
             });
         });
 
@@ -204,12 +202,12 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
      * the current line.
      *
      */
-    getFoldersPath(fileName: string, currentLine: string, currentPosition: number): string[] {
+    async getFoldersPath(fileName: string, currentLine: string, currentPosition: number): Promise<string[]> {
 
         var userPath = this.getUserPath(currentLine, currentPosition);
         var mappingResult = this.applyMapping(userPath);
 
-        return mappingResult.items.map((item) => {
+        return mappingResult.items.map(async (item) => {
             var insertedPath = item.insertedPath;
             var currentDir = item.currentDir || this.getCurrentDirectory(fileName, insertedPath);
 
@@ -230,7 +228,8 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
 
             // npm package
             if (this.isNodePackage(insertedPath, currentLine)) {
-                return [path.join(this.getNodeModulesPath(currentDir), insertedPath), path.join(currentDir, insertedPath)];
+                let paths = await this.getNodeModulesPath(currentDir);
+                return [path.join(paths, insertedPath), path.join(currentDir, insertedPath)];
             }
 
             return [path.join(currentDir, insertedPath)];
@@ -247,8 +246,10 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
             return path.dirname(folderPath);
         })
         // keep only valid paths
-        .filter(folderPath => {
-            if (!fs.existsSync(folderPath) || !fs.lstatSync(folderPath).isDirectory()) {
+        .filter(async folderPath => {
+            try {
+                await vs.workspace.fs.readDirectory(vs.Uri.parse(folderPath));
+            } catch {
                 return false;
             }
 
@@ -298,17 +299,20 @@ export class PathAutocomplete implements vs.CompletionItemProvider {
      *
      * @param currentDir The current directory
      */
-    getNodeModulesPath(currentDir: string): string {
+    async getNodeModulesPath(currentDir: string): Promise<string> {
         var rootPath = configuration.data.workspaceFolderPath;
 
         while (currentDir != path.dirname(currentDir)) {
 
             var candidatePath = path.join(currentDir, 'node_modules');
-            if (fs.existsSync(candidatePath)) {
-                return candidatePath;
-            }
 
-            currentDir = path.dirname(currentDir);
+            try {
+                await vs.workspace.fs.readDirectory(vs.Uri.parse(candidatePath));
+                return candidatePath;
+            } catch {
+                currentDir = path.dirname(currentDir);
+            }
+            
         }
 
         return path.join(rootPath, 'node_modules');

@@ -1,5 +1,5 @@
 import * as path from 'path';
-import * as fs from 'fs';
+import * as vscode from 'vscode';
 
 export class FileInfo {
     private type: string;
@@ -14,7 +14,11 @@ export class FileInfo {
     constructor(itemPath:string) {
 
         this.itemPath = itemPath;
-        this.type = fs.statSync(itemPath).isDirectory() ? 'dir' : 'file';
+
+        vscode.workspace.fs.stat(vscode.Uri.parse(itemPath)).then(stat => {
+            this.type = stat.type === 2 ? 'dir' : 'file';
+        })
+        
         this.name = path.basename(itemPath);
     }
 
